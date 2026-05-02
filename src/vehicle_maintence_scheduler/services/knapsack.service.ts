@@ -1,8 +1,7 @@
 import type { Vehicle } from "../types/scheduler.types.js";
 
- //0/1 Knapsack – maximise total Impact without exceeding capacity 
-  //Time complexity:  O(n × W)  where n = number of vehicles, W = mechanic-hour budget
- //Space complexity: O(n × W)  for the DP table
+ // 0/1 Knapsack – maximise total Impact without exceeding capacity 
+  //Time complexity:  O(n × W)  where n = number of vehicles, W = mechanic-hour budget ||  Space complexity: O(n × W)  for the DP table
 
 export function solveKnapsack(vehicles: Vehicle[], capacity: number): Vehicle[] {
   const n = vehicles.length;
@@ -16,10 +15,9 @@ export function solveKnapsack(vehicles: Vehicle[], capacity: number): Vehicle[] 
     const vehicle = vehicles[i - 1]!;
 
     for (let w = 0; w <= capacity; w++) {
-      // Option A: skip this vehicle
+     
       dp[i]![w] = dp[i - 1]![w]!;
 
-      // Option B: include this vehicle (only if it fits)
       if (vehicle.Duration <= w) {
         const withVehicle =
           dp[i - 1]![w - vehicle.Duration]! + vehicle.Impact;
@@ -31,7 +29,7 @@ export function solveKnapsack(vehicles: Vehicle[], capacity: number): Vehicle[] 
     }
   }
 
-  // Backtrack through DP table to recover selected vehicles
+  // Backtracking through DP table to recover selected vehicles
   const selected: Vehicle[] = [];
   let remainingCapacity = capacity;
 
