@@ -1,0 +1,28 @@
+{
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "typescript": "^6.0.3"
+  },
+  "name": "tspractice",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node src/index.ts",
+    "build": "npm install && tsc",
+    "start": "node dist/index.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "logging": "npx tsx src/logging_middleware/index.ts",
+    "scheduler": "npx tsx src/vehicle_maintence_scheduler/index.ts",
+    "notification": "npx tsx src/notification_app_be/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  }
+}
