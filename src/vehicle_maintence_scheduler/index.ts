@@ -1,13 +1,14 @@
+import 'dotenv/config.js';
 import express from "express";
 import scheduleRouter from "./routes/schedule.routes.js";
 
 const app = express();
 app.use(express.json());
 
-// Routes
+
 app.use("/schedule", scheduleRouter);
 
-// Health check
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "vehicle-maintenance-scheduler" });
 });

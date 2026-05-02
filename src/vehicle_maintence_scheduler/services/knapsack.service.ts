@@ -1,18 +1,9 @@
 import type { Vehicle } from "../types/scheduler.types.js";
 
-/**
- * 0/1 Knapsack – maximise total Impact without exceeding capacity (mechanic-hours).
- *
- * Time complexity:  O(n × W)  where n = number of vehicles, W = mechanic-hour budget
- * Space complexity: O(n × W)  for the DP table
- *
- * For very large W, a greedy fractional approach could be used as an approximation,
- * but integer durations here keep DP practical.
- *
- * @param vehicles  List of maintenance tasks with Duration and Impact
- * @param capacity  Available mechanic-hours for the depot
- * @returns         Optimal subset of vehicles to maximise impact
- */
+ //0/1 Knapsack – maximise total Impact without exceeding capacity 
+  //Time complexity:  O(n × W)  where n = number of vehicles, W = mechanic-hour budget
+ //Space complexity: O(n × W)  for the DP table
+
 export function solveKnapsack(vehicles: Vehicle[], capacity: number): Vehicle[] {
   const n = vehicles.length;
 

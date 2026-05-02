@@ -2,21 +2,21 @@ import type { NotificationsApiResponse } from "../types/notification.types.js";
 
 const BASE_URL = "http://20.207.122.201/evaluation-service";
 
-/**
- * Returns authorization headers using the API_TOKEN environment variable.
- * Set API_TOKEN=<your-token> before starting the server.
- */
+
 function getAuthHeaders(): Record<string, string> {
   const token = process.env["API_TOKEN"] ?? "";
+  if (!token) {
+    console.warn("⚠️  API_TOKEN is not set in environment variables!");
+  } else {
+    console.log("✓ API_TOKEN loaded:", token.substring(0, 20) + "...");
+  }
   return {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
 }
 
-/**
- * Fetches all notifications from the upstream evaluation API.
- */
+// all notifications
 export async function fetchNotifications(): Promise<NotificationsApiResponse> {
   const res = await fetch(`${BASE_URL}/notifications`, {
     headers: getAuthHeaders(),

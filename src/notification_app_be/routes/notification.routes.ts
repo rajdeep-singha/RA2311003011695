@@ -5,11 +5,7 @@ import type { PriorityInboxResponse } from "../types/notification.types.js";
 
 const router = Router();
 
-/**
- * GET /notifications/priority?n=10
- * Returns the top N notifications ranked by type priority (Placement > Result > Event)
- * and recency. Defaults to top 10.
- */
+
 router.get("/priority", async (req: Request, res: Response) => {
   try {
     const topN = Math.max(1, Number(req.query["n"]) || 10);
@@ -31,10 +27,7 @@ router.get("/priority", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /notifications/all
- * Proxies the full notification list from the upstream API.
- */
+
 router.get("/all", async (_req: Request, res: Response) => {
   try {
     const { notifications } = await fetchNotifications();
