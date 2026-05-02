@@ -1,8 +1,19 @@
-# Stage 1
+# Notification System Design
 
-## REST API Design – Campus Notification Platform
+## Table of Contents
 
-### Core Actions
+- [Stage 1 — REST API Design](#stage-1--rest-api-design)
+- [Stage 2 — Persistent Storage Design](#stage-2--persistent-storage-design)
+- [Stage 3 — Query Analysis and Optimisation](#stage-3--query-analysis-and-optimisation)
+- [Stage 4 — Performance Optimisation](#stage-4--performance-optimisation)
+- [Stage 5 — Bulk Notification Redesign](#stage-5--bulk-notification-redesign)
+- [Stage 6 — Priority Inbox](#stage-6--priority-inbox)
+
+---
+
+# Stage 1 — REST API Design
+
+## Core Actions
 
 The notification platform must support:
 1. Fetch all notifications for a logged-in student
@@ -14,9 +25,9 @@ The notification platform must support:
 
 ---
 
-### Endpoints
+## Endpoints
 
-#### 1. Get Notifications for a Student
+### 1. Get Notifications for a Student
 
 ```
 GET /api/v1/notifications
@@ -31,12 +42,13 @@ GET /api/v1/notifications
 ```
 
 **Query Parameters**
-| Parameter | Type   | Description                        |
-|-----------|--------|------------------------------------|
-| type      | string | Filter: `Placement`, `Event`, `Result` |
-| isRead    | boolean | Filter by read status             |
-| page      | number | Page number (default: 1)           |
-| limit     | number | Items per page (default: 20)       |
+
+| Parameter | Type    | Description                             |
+|-----------|---------|-----------------------------------------|
+| type      | string  | Filter: `Placement`, `Event`, `Result`  |
+| isRead    | boolean | Filter by read status                   |
+| page      | number  | Page number (default: 1)                |
+| limit     | number  | Items per page (default: 20)            |
 
 **Response (200)**
 ```json
@@ -60,7 +72,7 @@ GET /api/v1/notifications
 
 ---
 
-#### 2. Get Unread Count
+### 2. Get Unread Count
 
 ```
 GET /api/v1/notifications/unread-count
@@ -78,7 +90,7 @@ GET /api/v1/notifications/unread-count
 
 ---
 
-#### 3. Mark Notification as Read
+### 3. Mark Notification as Read
 
 ```
 PATCH /api/v1/notifications/:id/read
@@ -100,7 +112,7 @@ PATCH /api/v1/notifications/:id/read
 
 ---
 
-#### 4. Mark All as Read
+### 4. Mark All as Read
 
 ```
 PATCH /api/v1/notifications/read-all
@@ -118,7 +130,7 @@ PATCH /api/v1/notifications/read-all
 
 ---
 
-#### 5. Send Notification (Admin)
+### 5. Send Notification (Admin)
 
 ```
 POST /api/v1/notifications
@@ -152,19 +164,19 @@ POST /api/v1/notifications
 
 ---
 
-### Real-Time Notification Mechanism
+## Real-Time Notification Mechanism
 
 **Chosen approach: WebSockets (via Socket.IO)**
 
 When a student logs in, their client opens a WebSocket connection authenticated with a JWT. The server maintains a room per `studentID`. When a new notification is pushed, the server emits an event to that room.
 
-```
-// Client subscribes
+```js
+// Client subscribes on connect
 socket.on("connect", () => {
   socket.emit("subscribe", { token: "<jwt>" });
 });
 
-// Server emits
+// Server emits to the student's room
 socket.to(`student:${studentId}`).emit("notification", {
   id: "...",
   type: "Placement",
@@ -174,18 +186,18 @@ socket.to(`student:${studentId}`).emit("notification", {
 ```
 
 **Why WebSockets over SSE/polling:**
-- Bi-directional: client can acknowledge receipt
-- Efficient for high-concurrency (50k students)
-- Better than polling (avoids thundering herd)
-- SSE is simpler but unidirectional
+
+| Option | Pro | Con |
+|--------|-----|-----|
+| WebSockets | Bi-directional, client can acknowledge; scales to 50k concurrent | Requires persistent connection infrastructure |
+| SSE | Simple, HTTP-native | Unidirectional only; no client acknowledgement |
+| Long-polling | Works anywhere | High server load; thundering herd on reconnect |
 
 ---
 
-# Stage 2
+# Stage 2 — Persistent Storage Design
 
-## Persistent Storage Design
-
-### Recommended Database: PostgreSQL
+## Recommended Database: PostgreSQL
 
 **Why PostgreSQL:**
 - ACID compliance — notifications must not be lost or duplicated
@@ -195,7 +207,7 @@ socket.to(`student:${studentId}`).emit("notification", {
 
 ---
 
-### Schema
+## Schema
 
 ```sql
 -- Students table (abbreviated — managed by auth service)
@@ -209,7 +221,7 @@ CREATE TABLE students (
 -- Notification type enum
 CREATE TYPE notification_type AS ENUM ('Placement', 'Result', 'Event');
 
--- Notifications master table (one row per notification broadcast)
+-- Notifications master table (one row per broadcast)
 CREATE TABLE notifications (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   type        notification_type NOT NULL,
@@ -217,7 +229,7 @@ CREATE TABLE notifications (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Per-student delivery/read status
+-- Per-student delivery and read status
 CREATE TABLE student_notifications (
   id               BIGSERIAL PRIMARY KEY,
   student_id       INT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -228,32 +240,33 @@ CREATE TABLE student_notifications (
   UNIQUE (student_id, notification_id)
 );
 
--- Indexes for hot query paths
+-- Partial index for the hot unread-fetch path
 CREATE INDEX idx_sn_student_unread
-  ON student_notifications (student_id, is_read, created_at DESC)
+  ON student_notifications (student_id, created_at DESC)
   WHERE is_read = FALSE;
 
+-- General index for paginated history
 CREATE INDEX idx_sn_student_created
   ON student_notifications (student_id, created_at DESC);
 ```
 
 ---
 
-### Scalability Problems as Data Grows
+## Scalability Problems as Data Grows
 
 | Problem | Root Cause | Solution |
 |---------|-----------|----------|
 | Slow unread fetch | Full table scan on `student_notifications` | Partial index on `is_read = false`; Redis unread counter |
 | Notification fan-out | Writing 50,000 rows per broadcast | Job queue (BullMQ/Kafka); async workers |
-| Table bloat | Billions of `student_notifications` rows over time | Partition by `created_at` (monthly); archive old data to cold storage |
-| Hot primary DB | All reads hitting primary | Read replicas for GET queries |
-| Connection exhaustion | 50k students opening DB connections | PgBouncer connection pooling |
+| Table bloat | Billions of rows over time | Partition by `created_at` (monthly); archive old data |
+| Hot primary DB | All reads hitting one node | Read replicas for all GET queries |
+| Connection exhaustion | 50k students connecting simultaneously | PgBouncer connection pooling |
 
 ---
 
-### Relevant Queries
+## Relevant Queries
 
-**Fetch unread notifications for a student (from Stage 1 API):**
+**Fetch unread notifications for a student:**
 ```sql
 SELECT n.id, n.type, n.message, n.created_at, sn.is_read
 FROM student_notifications sn
@@ -266,7 +279,8 @@ LIMIT 20 OFFSET $2;
 
 **Unread count:**
 ```sql
-SELECT COUNT(*) FROM student_notifications
+SELECT COUNT(*)
+FROM student_notifications
 WHERE student_id = $1 AND is_read = FALSE;
 ```
 
@@ -279,11 +293,9 @@ WHERE student_id = $1 AND is_read = FALSE;
 
 ---
 
-# Stage 3
+# Stage 3 — Query Analysis and Optimisation
 
-## Query Analysis and Optimisation
-
-### The slow query
+## The Slow Query
 
 ```sql
 SELECT * FROM notifications
@@ -291,66 +303,67 @@ WHERE studentID = 1042 AND isRead = false
 ORDER BY createdAt DESC;
 ```
 
-### Is this query accurate?
+## Is This Query Accurate?
 
 **No — it has a design flaw.**
-In a properly normalised schema, `notifications` is a broadcast table (one row per notification). `studentID` and `isRead` belong in a `student_notifications` join table. Querying `notifications` directly with these columns implies a denormalised design that stores one row per (student, notification) pair, which does not scale.
 
-Assuming the schema is flat (one row per student-notification pair):
+In a properly normalised schema, `notifications` stores one row per broadcast. `studentID` and `isRead` belong in a `student_notifications` join table. Putting them directly in `notifications` implies a denormalised design (one row per student-notification pair) which creates billions of rows and does not scale.
 
-### Why is it slow?
+Assuming the flat schema is given:
 
-1. **No index on `(studentID, isRead, createdAt)`** — PostgreSQL does a sequential scan across 5,000,000 rows.
-2. **`SELECT *`** — fetches all columns including large `message` blobs, increasing I/O.
-3. **`isRead = false`** is highly selective but not indexed — the planner cannot use a partial index if none exists.
+## Why Is It Slow?
 
-### What to change
+1. **No index on `(studentID, isRead, createdAt)`** — PostgreSQL performs a sequential scan across 5,000,000 rows.
+2. **`SELECT *`** — fetches all columns including large `message` blobs, increasing I/O unnecessarily.
+3. **`isRead = false`** is highly selective but without a partial index, the planner cannot take advantage of it.
+
+## What to Change
 
 ```sql
--- Add a composite partial index
+-- Add a composite partial index covering the exact filter + sort
 CREATE INDEX idx_notifications_student_unread
   ON notifications (studentID, createdAt DESC)
   WHERE isRead = false;
 
--- Rewrite query to select only needed columns
+-- Select only required columns; add LIMIT to bound the result set
 SELECT id, type, message, createdAt
 FROM notifications
-WHERE studentID = 1042 AND isRead = false
+WHERE studentID = 1042
+  AND isRead = false
 ORDER BY createdAt DESC
 LIMIT 20;
 ```
 
-### Likely computation cost improvement
+## Likely Performance Improvement
 
-| Before | After |
-|--------|-------|
-| Sequential scan ~5M rows | Index scan → few hundred rows |
-| O(N) | O(log N + K) where K = result count |
-| ~800ms | ~5ms |
+| Metric | Before | After |
+|--------|--------|-------|
+| Scan type | Sequential (5M rows) | Index scan (targeted rows) |
+| Complexity | O(N) | O(log N + K) |
+| Estimated latency | ~800 ms | ~5 ms |
 
-### Should we add indexes on every column?
+## Should We Index Every Column?
 
 **No — this advice is harmful.**
 
-- Every index adds write overhead (`INSERT`, `UPDATE`, `DELETE` must update all indexes).
-- Indexes consume disk space and RAM (shared_buffers).
-- The query planner may choose wrong indexes if there are too many.
+- Every index adds write overhead: each `INSERT`, `UPDATE`, and `DELETE` must update all indexes.
+- Indexes consume RAM (PostgreSQL shared_buffers) and disk space.
+- Too many indexes confuse the query planner, which may select a suboptimal one.
 - Only index columns that appear in `WHERE`, `ORDER BY`, or `JOIN ON` clauses of frequent queries.
 
-**Add targeted indexes, not blanket coverage.**
+**Add targeted, selective indexes — not blanket coverage.**
 
-### Query: Students who received a Placement notification in the last 7 days
+## Query: Students Who Got a Placement Notification in the Last 7 Days
 
 ```sql
+-- Normalised schema
 SELECT DISTINCT sn.student_id
 FROM student_notifications sn
 JOIN notifications n ON n.id = sn.notification_id
 WHERE n.type = 'Placement'
   AND n.created_at >= NOW() - INTERVAL '7 days';
-```
 
-If using a flat schema with `notificationType` column:
-```sql
+-- Flat schema with notificationType column
 SELECT DISTINCT studentID
 FROM notifications
 WHERE notificationType = 'Placement'
@@ -359,59 +372,53 @@ WHERE notificationType = 'Placement'
 
 ---
 
-# Stage 4
+# Stage 4 — Performance Optimisation
 
-## Performance Optimisation — Reducing DB Load
+## Problem
 
-### Problem
+Notifications are fetched on every page load for every student — the database gets overwhelmed, causing slow responses and poor user experience.
 
-Notifications are fetched on every page load for every student → DB overwhelmed.
+## Solutions and Trade-offs
 
-### Solutions and Trade-offs
+### 1. Redis Cache (Recommended Primary Solution)
 
-#### 1. Redis Cache (Recommended Primary Solution)
-
-Cache each student's notification list and unread count in Redis with a short TTL (e.g., 60 seconds).
+Cache each student's unread notification list in Redis with a short TTL.
 
 ```
-Key: notifications:student:{studentID}:unread
+Key:   notifications:student:{studentID}:unread
 Value: JSON array of unread notifications
-TTL: 60 seconds
+TTL:   60 seconds
 ```
 
-On `PATCH /read`, invalidate or decrement the cache key.
+On `PATCH /read`, invalidate the key or decrement a counter.
 
 | Trade-off | Detail |
 |-----------|--------|
 | Pro | Dramatically reduces DB reads |
-| Pro | Sub-millisecond reads from Redis |
-| Con | Stale data for up to TTL window |
-| Con | Cache invalidation complexity on mark-read |
+| Pro | Sub-millisecond reads from cache |
+| Con | Up to TTL seconds of stale data |
+| Con | Cache invalidation logic on mark-read |
 
-#### 2. Pagination + Limit
+### 2. Pagination + LIMIT
 
-Never return all notifications — enforce `LIMIT` and pagination. Reduces data transferred per request.
+Never return all notifications. Enforce server-side pagination with `LIMIT` and `OFFSET` (or cursor-based). Reduces data per request and query cost.
 
-#### 3. Read Replicas
+### 3. Read Replicas
 
-Route all GET queries to a PostgreSQL read replica. The primary handles only writes.
+Route all `GET` queries to a PostgreSQL read replica. The primary handles only writes.
 
 | Trade-off | Detail |
 |-----------|--------|
 | Pro | Offloads primary; horizontal read scaling |
-| Con | Replication lag may serve slightly stale data |
+| Con | Replication lag may briefly serve stale data |
 
-#### 4. Unread Count in Redis (Separate from List)
+### 4. Unread Count as a Redis Counter
 
-Store unread count as a Redis integer (`INCR`/`DECR`). Avoid querying the DB for count on every load.
+Store unread count as a Redis integer per student (`INCR`/`DECR`). Avoid a `COUNT(*)` DB query on every page load.
 
-#### 5. CDN / HTTP Caching for Static Notification Templates
+### 5. WebSocket Push Instead of Polling
 
-Notification metadata that doesn't change (e.g., event announcements) can be cached at CDN level with `Cache-Control` headers.
-
-#### 6. WebSocket Push Instead of Polling
-
-Rather than fetching on every page load, push new notifications to the client via WebSocket. Client only needs to fetch on initial load; subsequent updates are pushed.
+Rather than fetching on every page load, push new notifications via WebSocket. The client fetches once on initial load; all subsequent updates are server-pushed.
 
 | Trade-off | Detail |
 |-----------|--------|
@@ -420,11 +427,9 @@ Rather than fetching on every page load, push new notifications to the client vi
 
 ---
 
-# Stage 5
+# Stage 5 — Bulk Notification Redesign
 
-## Bulk Notification Redesign
-
-### Problem with the current pseudocode
+## Problem with the Current Pseudocode
 
 ```python
 function notify_all(student_ids: array, message: string):
@@ -436,85 +441,86 @@ function notify_all(student_ids: array, message: string):
 
 **Shortcomings:**
 
-1. **Sequential loop** — 50,000 iterations in a single thread. This will take minutes and block the server.
-2. **No error handling** — if `send_email` fails for student 200, the loop stops (or silently continues). There is no retry.
-3. **Tight coupling** — all three operations (email, DB, push) are synchronous and coupled. If any one fails, it blocks the rest.
-4. **No partial failure recovery** — if the process crashes at student 25,000, there is no checkpoint to resume from.
-5. **Email API rate limits** — hammering the Email API for 50,000 calls in a loop will hit rate limits.
+1. **Sequential loop** — 50,000 synchronous iterations block the entire server for minutes.
+2. **No error handling** — if `send_email` throws at student 200, subsequent students are skipped silently.
+3. **Tight coupling** — email, DB, and push are chained. A failure in one prevents the others.
+4. **No partial failure recovery** — if the process crashes at student 25,000 there is no checkpoint; the job must restart from zero.
+5. **Email API rate limits** — 50,000 sequential API calls will immediately hit rate limits.
 
-### What happened (200 email failures midway)
+## What Happened (200 Email Failures Midway)
 
-The `send_email` call failed for 200 students. In the current design there is no retry, so those students never receive the email. There is also no record of which students failed.
+The `send_email` call failed for 200 students. The current design has no retry, so those students never receive the email and there is no record of which ones failed. The only recovery option is a full re-run, which risks double-sending to the other 49,800.
 
-### Redesigned Approach
-
-**Use a message queue (BullMQ / Kafka / RabbitMQ)**
+## Redesigned Approach — Message Queue
 
 ```
 HR clicks "Notify All"
       │
       ▼
-API: save broadcast to notifications table (1 row)
+API: write one broadcast row to notifications table
       │
       ▼
-Enqueue job per student → Queue (BullMQ / Kafka)
+Bulk insert into student_notifications (single SQL statement)
       │
-      ├─► Email Worker (retries on failure, dead-letter queue)
-      ├─► DB Worker (bulk insert student_notifications)
-      └─► Push Worker (WebSocket emit)
+      ▼
+Enqueue one email job per student → BullMQ / Kafka
+      │
+      ├─► Email Worker   (retries with exponential backoff, dead-letter queue)
+      └─► Push Worker    (WebSocket broadcast, non-blocking)
 ```
 
-### Revised Pseudocode
+## Revised Pseudocode
 
 ```typescript
 async function notifyAll(studentIds: string[], message: string): Promise<void> {
-  // 1. Save broadcast notification once
+  // 1. Persist the broadcast notification once (source of truth)
   const notificationId = await saveNotificationToDB(message);
 
-  // 2. Bulk insert student_notifications (single query, not per-student)
+  // 2. Bulk insert delivery records — one SQL statement, not 50,000
   await bulkInsertStudentNotifications(studentIds, notificationId);
 
-  // 3. Enqueue email jobs (queue handles retries, rate limiting)
+  // 3. Enqueue email jobs — the queue handles retries and rate limiting
   const jobs = studentIds.map((id) => ({
     name: "send-email",
     data: { studentId: id, notificationId, message },
   }));
   await emailQueue.addBulk(jobs);
 
-  // 4. Push to connected WebSocket clients (non-blocking)
+  // 4. Broadcast via WebSocket (non-blocking, best-effort)
   socketServer.emit("broadcast", { type: "Placement", message });
 }
 
-// Email worker with retry
+// Email worker — BullMQ retries automatically on throw
 emailQueue.process("send-email", async (job) => {
   await sendEmail(job.data.studentId, job.data.message);
-  // BullMQ automatically retries on throw, with exponential backoff
 });
 ```
 
-### Should saving to DB and sending email happen together?
+## Should Saving to DB and Sending Email Happen Together?
 
-**No — they should be decoupled.**
+**No — they must be decoupled.**
 
-- **DB insert must happen first** — it is the source of truth. If the email fails, the notification still exists and the student can see it in-app.
-- **Email is a best-effort delivery channel** — it should be retried independently via the queue without blocking or rolling back the DB write.
-- Coupling them in a transaction means a failed email rolls back the notification record, causing silent data loss.
+- **DB insert first**: it is the source of truth. Even if email delivery fails, the student can see the notification in-app.
+- **Email is best-effort**: it should be retried independently by the queue without blocking or rolling back the DB write.
+- Coupling them in a single transaction means a failed email silently deletes the notification record.
 
 **Decoupled flow guarantees:**
-- Notification is always persisted even if email delivery fails
+- Notification is always persisted regardless of email failures
 - Failed emails are retried with exponential backoff
-- A dead-letter queue captures permanently failed jobs for manual inspection
-- The process is resumable — restarting after a crash only replays unacknowledged queue jobs
+- A dead-letter queue captures permanently failed jobs for manual review
+- Restarting after a crash only replays unacknowledged queue jobs — no double-sends
 
 ---
 
-# Stage 6
+# Stage 6 — Priority Inbox
 
-## Priority Inbox
+## Requirement
 
-### Approach
+Display the top N most important unread notifications first (N configurable: 10, 15, 20, etc.). Priority is a combination of **type weight** and **recency**.
 
-Priority is determined by a combination of **type weight** and **recency**.
+## Scoring Approach
+
+### Type Weights
 
 | Type      | Weight |
 |-----------|--------|
@@ -522,50 +528,82 @@ Priority is determined by a combination of **type weight** and **recency**.
 | Result    | 2      |
 | Event     | 1      |
 
-**Scoring formula:**
+### Scoring Formula
+
 ```
-score = typeWeight + normalised_recency
+score = typeWeight + normalisedRecency
 ```
 
-`normalised_recency` maps the notification's timestamp to [0, 1) relative to the oldest and newest notifications in the set, so recency never overrides the type priority (the gap between type weights is 1, recency is always < 1).
+`normalisedRecency` maps each notification's timestamp to the range **[0, 1)** relative to the oldest and newest items in the set:
 
-**Why this formula:**
-- A Placement notification (weight=3) always ranks above any Result (weight=2), regardless of age.
-- Among same-type notifications, the newest appears first.
-- Simple, O(n log n), no DB query needed.
+```
+normalisedRecency = (timestamp - oldest) / (newest - oldest)
+```
 
-### Maintaining Top 10 Efficiently as New Notifications Arrive
+Because the recency component is always less than 1 and the gap between type weights is 1, **type priority always dominates** — a Placement notification will always rank above any Result, regardless of age. Within the same type, newer notifications rank higher.
 
-Use a **min-heap of size N** (min-heap on score):
+### Complexity
 
-1. For each incoming notification, compute its score.
-2. If heap size < N: push it.
-3. Else if score > heap minimum: pop the minimum, push the new notification.
-4. The heap always holds the top-N with O(log N) per insertion.
+- Sorting N notifications: **O(n log n)**
+- No database query required — computed entirely in memory from the API response
 
-This avoids re-sorting the entire list on every new notification.
+## Maintaining Top N Efficiently as New Notifications Arrive
 
-### Implementation
+For a live stream of incoming notifications, re-sorting the full list on every event is wasteful. The efficient approach is a **min-heap of size N**:
 
-See `notification_app_be/index.ts` for the working TypeScript + Express implementation.
+1. Compute the score for the incoming notification.
+2. If heap size < N → push it directly.
+3. If score > heap's minimum → pop the minimum, push the new notification.
+4. The heap always holds the current top-N with **O(log N) per insertion**.
 
-**Endpoint:**
+This keeps the priority inbox up to date without rescanning the entire notification history.
+
+## Implementation
+
+**Language:** TypeScript + Express
+**File:** [`src/notification_app_be/services/priority.service.ts`](src/notification_app_be/services/priority.service.ts)
+
+### Endpoint
+
 ```
 GET /notifications/priority?n=10
 ```
 
-**Response:**
+### Sample Response
+
 ```json
 {
   "topNotifications": [
     {
-      "ID": "b283218f-...",
+      "ID": "b283218f-ea5a-4b7c-93a9-1f2f240d64b0",
       "Type": "Placement",
       "Message": "CSX Corporation hiring",
       "Timestamp": "2026-04-22 17:51:18"
+    },
+    {
+      "ID": "d146095a-0d86-4a34-9e69-3900a14576bc",
+      "Type": "Result",
+      "Message": "mid-sem",
+      "Timestamp": "2026-04-22 17:51:30"
     }
   ],
   "count": 10,
-  "scoringStrategy": "type-priority (Placement>Result>Event) + recency"
+  "scoringStrategy": "type-priority (Placement > Result > Event) + normalised recency"
 }
 ```
+
+## Output Screenshots
+
+### Server Startup
+
+<img width="684" height="225" alt="Campus notification app server starting on port 3002" src="https://github.com/user-attachments/assets/76dcd31b-e556-499c-9eba-e466e5db0245" />
+
+### GET /notifications/priority — Priority Inbox (Top 10)
+
+Placement-type notifications appear first, followed by Results, then Events. Within each type, the most recent notification is ranked higher.
+
+<img width="954" height="825" alt="GET /notifications/priority returning top ranked notifications with Placement first" src="https://github.com/user-attachments/assets/498a92f0-2230-4590-b41f-35b8532b7a1c" />
+
+### GET /notifications/all — Full Notification List
+
+<img width="955" height="832" alt="GET /notifications/all returning the complete list of campus notifications" src="https://github.com/user-attachments/assets/5a4df466-38e9-44f6-bd21-6a4c8fb2f643" />
